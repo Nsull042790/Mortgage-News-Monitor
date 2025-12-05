@@ -15,26 +15,20 @@ class ImportanceDetector:
     """
     Detects the importance level of mortgage news articles.
 
-    Uses keyword matching and source priority to determine if news
-    is breaking/urgent and should be sent immediately.
+    Breaking news alerts ONLY trigger for major events like:
+    - Loan limit changes
+    - Fed rate decisions
+    - Major policy announcements
+    - Crisis-level events
     """
 
     def __init__(
         self,
         breaking_keywords: Optional[list[str]] = None,
         urgent_keywords: Optional[list[str]] = None,
-        breaking_threshold: int = 50,
-        urgent_threshold: int = 80,
+        breaking_threshold: int = 100,  # HIGH threshold - must have urgent keyword
+        urgent_threshold: int = 150,
     ):
-        """
-        Initialize the importance detector.
-
-        Args:
-            breaking_keywords: Keywords that indicate important news (adds score)
-            urgent_keywords: Keywords that indicate urgent/breaking news (adds more score)
-            breaking_threshold: Minimum score to be considered breaking news
-            urgent_threshold: Minimum score to be considered urgent (immediate alert)
-        """
         self.breaking_keywords = breaking_keywords or BREAKING_NEWS_KEYWORDS
         self.urgent_keywords = urgent_keywords or URGENT_KEYWORDS
         self.breaking_threshold = breaking_threshold
@@ -51,41 +45,37 @@ class ImportanceDetector:
         ]
 
         logger.info(
-            f"ImportanceDetector initialized with {len(self.breaking_keywords)} breaking "
-            f"and {len(self.urgent_keywords)} urgent keywords"
+            f"ImportanceDetector initialized with {len(self.urgent_keywords)} urgent keywords"
         )
 
     def analyze(self, item: NewsItem) -> NewsItem:
         """
         Analyze a news item and update its importance score.
 
-        Args:
-            item: The news item to analyze
-
-        Returns:
-            The same NewsItem with updated importance_score and is_breaking_news
+        Breaking news ONLY triggers if an URGENT keyword is found.
         """
         score = item.importance_score  # Start with existing score (from source priority)
+        has_urgent_keyword = False
 
         # Combine title and summary for analysis
         text = f"{item.title} {item.summary or ''}"
 
-        # Check for breaking keywords
+        # Check for basic relevance keywords (minor score boost for digest ranking)
         breaking_matches = self._count_keyword_matches(text, self._breaking_patterns)
-        score += breaking_matches * 10  # 10 points per breaking keyword
+        score += breaking_matches * 5  # Small boost for relevance
 
-        # Check for urgent keywords (higher value)
+        # Check for URGENT keywords - these are what trigger breaking alerts
         urgent_matches = self._count_keyword_matches(text, self._urgent_patterns)
-        score += urgent_matches * 20  # 20 points per urgent keyword
+        if urgent_matches > 0:
+            has_urgent_keyword = True
+            score += urgent_matches * 50  # Big boost for urgent keywords
 
-        # Bonus for recency (news from last hour gets bonus)
-        if item.published_at:
+        # Bonus for recency (only matters if urgent keyword found)
+        if item.published_at and has_urgent_keyword:
             try:
-                # Handle timezone-aware and naive datetimes
                 now = datetime.now()
                 published = item.published_at
 
-                # If published_at is timezone-aware, make it naive for comparison
                 if published.tzinfo is not None:
                     published = published.replace(tzinfo=None)
 
@@ -94,50 +84,36 @@ class ImportanceDetector:
                     score += 30  # Recent news bonus
                 elif hours_old < 6:
                     score += 15
-                elif hours_old < 24:
-                    score += 5
             except Exception:
-                pass  # Skip recency bonus if date comparison fails
+                pass
 
-        # Check for high-priority sources in the item source name
-        high_priority_sources = [
-            "federal reserve",
-            "fhfa",
-            "hud",
-            "cfpb",
-            "fannie mae",
-            "freddie mac",
-            "fomc",
-        ]
-        for source in high_priority_sources:
-            if source in item.source.lower():
-                score += 15
-                break
+        # Bonus for official government sources (only if urgent keyword found)
+        if has_urgent_keyword:
+            official_sources = [
+                "federal reserve",
+                "fhfa",
+                "hud",
+                "cfpb",
+            ]
+            for source in official_sources:
+                if source in item.source.lower():
+                    score += 25
+                    break
 
         # Update the item
         item.importance_score = score
-        item.is_breaking_news = score >= self.breaking_threshold
 
-        if score >= self.urgent_threshold:
-            logger.info(f"URGENT news detected (score={score}): {item.title[:50]}...")
-        elif item.is_breaking_news:
-            logger.info(f"Breaking news detected (score={score}): {item.title[:50]}...")
+        # ONLY mark as breaking if urgent keyword was found AND score is high enough
+        item.is_breaking_news = has_urgent_keyword and score >= self.breaking_threshold
+
+        if item.is_breaking_news:
+            logger.info(f"BREAKING news detected (score={score}): {item.title[:50]}...")
 
         return item
 
     def analyze_batch(self, items: list[NewsItem]) -> list[NewsItem]:
-        """
-        Analyze a batch of news items.
-
-        Args:
-            items: List of news items to analyze
-
-        Returns:
-            List of items with updated importance scores
-        """
+        """Analyze a batch of news items."""
         analyzed = [self.analyze(item) for item in items]
-
-        # Sort by importance
         analyzed.sort(key=lambda x: -x.importance_score)
 
         breaking_count = sum(1 for item in analyzed if item.is_breaking_news)
@@ -148,27 +124,11 @@ class ImportanceDetector:
         return analyzed
 
     def filter_breaking_news(self, items: list[NewsItem]) -> list[NewsItem]:
-        """
-        Filter items to only include breaking news.
-
-        Args:
-            items: List of news items (should already be analyzed)
-
-        Returns:
-            List of items that meet the breaking news threshold
-        """
+        """Filter items to only include breaking news."""
         return [item for item in items if item.is_breaking_news]
 
     def filter_urgent_news(self, items: list[NewsItem]) -> list[NewsItem]:
-        """
-        Filter items to only include urgent news (highest priority).
-
-        Args:
-            items: List of news items (should already be analyzed)
-
-        Returns:
-            List of items that meet the urgent threshold
-        """
+        """Filter items to only include urgent news (highest priority)."""
         return [item for item in items if item.importance_score >= self.urgent_threshold]
 
     def _count_keyword_matches(
@@ -182,15 +142,7 @@ class ImportanceDetector:
         return count
 
     def get_importance_level(self, score: int) -> str:
-        """
-        Get a human-readable importance level for a score.
-
-        Args:
-            score: The importance score
-
-        Returns:
-            String describing the importance level
-        """
+        """Get a human-readable importance level for a score."""
         if score >= self.urgent_threshold:
             return "URGENT"
         elif score >= self.breaking_threshold:
