@@ -80,13 +80,24 @@ class ImportanceDetector:
 
         # Bonus for recency (news from last hour gets bonus)
         if item.published_at:
-            hours_old = (datetime.now() - item.published_at).total_seconds() / 3600
-            if hours_old < 1:
-                score += 30  # Recent news bonus
-            elif hours_old < 6:
-                score += 15
-            elif hours_old < 24:
-                score += 5
+            try:
+                # Handle timezone-aware and naive datetimes
+                now = datetime.now()
+                published = item.published_at
+
+                # If published_at is timezone-aware, make it naive for comparison
+                if published.tzinfo is not None:
+                    published = published.replace(tzinfo=None)
+
+                hours_old = (now - published).total_seconds() / 3600
+                if hours_old < 1:
+                    score += 30  # Recent news bonus
+                elif hours_old < 6:
+                    score += 15
+                elif hours_old < 24:
+                    score += 5
+            except Exception:
+                pass  # Skip recency bonus if date comparison fails
 
         # Check for high-priority sources in the item source name
         high_priority_sources = [
