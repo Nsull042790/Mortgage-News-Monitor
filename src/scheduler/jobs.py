@@ -24,7 +24,7 @@ class NewsScheduler:
 
     Handles:
     - Daily digest at configured time (weekdays only)
-    - Continuous monitoring for breaking news
+    - Breaking news monitoring (weekdays, business hours only)
     - Database cleanup
     """
 
@@ -52,8 +52,22 @@ class NewsScheduler:
         self.timezone = pytz.timezone(Config.TIMEZONE)
         self.scheduler = BackgroundScheduler(timezone=self.timezone)
 
+        # Business hours configuration (for free tier optimization)
+        self.business_hours_start = int(Config.BUSINESS_HOURS_START)
+        self.business_hours_end = int(Config.BUSINESS_HOURS_END)
+
         self._setup_jobs()
         logger.info(f"NewsScheduler initialized with timezone {Config.TIMEZONE}")
+
+    def _is_business_hours(self) -> bool:
+        """Check if current time is within business hours on a weekday."""
+        now = datetime.now(self.timezone)
+        # Monday = 0, Sunday = 6
+        if now.weekday() >= 5:  # Saturday or Sunday
+            return False
+        if now.hour < self.business_hours_start or now.hour >= self.business_hours_end:
+            return False
+        return True
 
     def _setup_jobs(self) -> None:
         """Set up all scheduled jobs."""
@@ -77,27 +91,44 @@ class NewsScheduler:
             f"Scheduled daily digest for weekdays at {Config.DAILY_DIGEST_TIME} {Config.TIMEZONE}"
         )
 
-        # Breaking news monitoring job - every N minutes
+        # Breaking news monitoring job - weekdays only, business hours only
+        # Uses cron to only run during business hours (saves Railway free tier hours!)
+        # Runs every N minutes, but only during weekday business hours
+        interval = Config.BREAKING_NEWS_CHECK_INTERVAL
+
+        # Create cron expression for every N minutes during business hours
+        # e.g., "*/15" means every 15 minutes
         self.scheduler.add_job(
             self._breaking_news_job,
-            IntervalTrigger(minutes=Config.BREAKING_NEWS_CHECK_INTERVAL),
+            CronTrigger(
+                day_of_week="mon-fri",
+                hour=f"{self.business_hours_start}-{self.business_hours_end - 1}",
+                minute=f"*/{interval}",
+                timezone=self.timezone,
+            ),
             id="breaking_news",
             name="Breaking News Monitor",
             replace_existing=True,
         )
         logger.info(
-            f"Scheduled breaking news check every {Config.BREAKING_NEWS_CHECK_INTERVAL} minutes"
+            f"Scheduled breaking news check every {interval} min, "
+            f"weekdays {self.business_hours_start}:00-{self.business_hours_end}:00 {Config.TIMEZONE}"
         )
 
-        # Database cleanup job - daily at 3am
+        # Database cleanup job - weekdays at 3am (only if within business hours start)
         self.scheduler.add_job(
             self._cleanup_job,
-            CronTrigger(hour=3, minute=0, timezone=self.timezone),
+            CronTrigger(
+                day_of_week="mon-fri",
+                hour=self.business_hours_start,
+                minute=5,
+                timezone=self.timezone,
+            ),
             id="cleanup",
             name="Database Cleanup",
             replace_existing=True,
         )
-        logger.info("Scheduled database cleanup for 3:00 AM daily")
+        logger.info(f"Scheduled database cleanup for weekdays at {self.business_hours_start}:05")
 
     def _daily_digest_job(self) -> None:
         """Job to send the daily news digest."""
@@ -211,6 +242,10 @@ class NewsScheduler:
         if not self.scheduler.running:
             self.scheduler.start()
             logger.info("Scheduler started")
+            logger.info(
+                f"Running weekdays only, {self.business_hours_start}:00-{self.business_hours_end}:00 "
+                f"(optimized for Railway free tier)"
+            )
 
     def stop(self) -> None:
         """Stop the scheduler."""

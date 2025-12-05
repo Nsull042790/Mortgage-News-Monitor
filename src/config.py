@@ -23,6 +23,11 @@ class Config:
     DAILY_DIGEST_TIME: str = os.getenv("DAILY_DIGEST_TIME", "08:00")
     TIMEZONE: str = os.getenv("TIMEZONE", "America/New_York")
 
+    # Business hours (for Railway free tier optimization)
+    # Only monitors during these hours on weekdays to save compute hours
+    BUSINESS_HOURS_START: str = os.getenv("BUSINESS_HOURS_START", "6")   # 6 AM
+    BUSINESS_HOURS_END: str = os.getenv("BUSINESS_HOURS_END", "20")      # 8 PM
+
     # Database
     DATABASE_PATH: str = os.getenv("DATABASE_PATH", "./data/mortgage_news.db")
 
